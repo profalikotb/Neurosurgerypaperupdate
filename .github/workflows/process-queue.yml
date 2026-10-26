@@ -1,0 +1,17 @@
+name: Process job queue
+# Vercel Hobby crons run once a day; this keeps background jobs (summaries, PDF extraction,
+# enrichment) flowing every 15 minutes. Add repo secrets APP_URL and CRON_SECRET.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Trigger /api/jobs/run
+        run: |
+          code=$(curl -s -o out.json -w "%{http_code}" -X POST "${{ secrets.APP_URL }}/api/jobs/run" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" --max-time 320)
+          cat out.json; echo; test "$code" = "200"
