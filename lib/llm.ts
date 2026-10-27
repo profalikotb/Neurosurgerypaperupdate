@@ -9,7 +9,12 @@ export class LLMError extends Error {}
 
 function explain(status: number, body: string): string {
   if (status === 401) return "AI provider rejected the API key (401). Check LLM_API_KEY.";
-  if (/insufficient_quota|billing|credit/i.test(body)) return "AI provider account has no credit (insufficient quota). Add billing or switch provider.";
+  if (/insufficient_quota|billing|credit/i.test(body) || status === 402) {
+    const afford = body.match(/can only afford (\d+)/i)?.[1];
+    return afford
+      ? `AI provider credit too low: this request needs up to ${body.match(/requested up to (\d+)/i)?.[1] ?? "~14000"} output tokens but your balance covers only ${afford}. Add credit at openrouter.ai/settings/credits (≈$5 is enough to start).`
+      : `AI provider account has no credit. Add credit at openrouter.ai/settings/credits, or switch provider. (${body.slice(0, 160)})`;
+  }
   if (status === 429) return "AI provider rate limit reached — the job will retry automatically.";
   if (status === 404) return `Model not found at provider: ${body.slice(0, 200)}`;
   return `AI provider error ${status}: ${body.slice(0, 300)}`;
@@ -31,6 +36,12 @@ async function call(messages: Msg[], o: Opts, stream: boolean): Promise<Response
     });
     if (r.ok) return r;
     const t = await r.text();
+    // OpenRouter 402: balance can't cover max_tokens — retry once with what it can afford if that is still useful
+    if (r.status === 402) {
+      const afford = Number(t.match(/can only afford (\d+)/i)?.[1] ?? 0);
+      const cur = Number(body.max_tokens ?? body.max_completion_tokens ?? 0);
+      if (afford >= 3000 && afford < cur) { if ("max_tokens" in body) body.max_tokens = afford - 50; else body.max_completion_tokens = afford - 50; continue; }
+    }
     if (r.status === 400) {
       if (/max_completion_tokens/i.test(t) && "max_tokens" in body) { body.max_completion_tokens = body.max_tokens; delete body.max_tokens; continue; }
       if (/temperature/i.test(t) && "temperature" in body) { delete body.temperature; continue; }
