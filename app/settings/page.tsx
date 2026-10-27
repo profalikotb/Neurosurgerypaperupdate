@@ -28,7 +28,7 @@ export default async function SettingsPage() {
   const q = (s: string) => (jobs ?? []).filter((j: any) => j.status === s).length;
   const checks: [string, boolean, string][] = [
     ["Database tables", !dbCheck.error, dbCheck.error ? "missing — run 0001_init.sql in Supabase SQL Editor" : `${journals?.length ?? 0} journals`],
-    ["AI provider", hasLLM(), `${env.llmModel} @ ${env.llmBase.replace(/^https?:\/\//, "")}`],
+    ["AI provider", hasLLM(), hasLLM() ? `${env.llmModel} @ ${env.llmBase.replace(/^https?:\/\//, "")}` : `no key found — this deployment sees: ${["LLM_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"].map((k) => `${k} ${process.env[k] ? "✓" : "✗"}`).join(", ")}`],
     ["Embeddings (semantic search)", hasEmbeddings(), hasEmbeddings() ? `${env.embModel} · ${env.embDims}d` : "keyword search only"],
     ["NCBI API key", Boolean(env.ncbiKey), env.ncbiKey ? "10 req/s" : "optional — 3 req/s"],
     ["Contact email (Unpaywall/Crossref)", Boolean(env.contactEmail), env.contactEmail || "required for Unpaywall OA lookup"],
