@@ -1,4 +1,7 @@
-import * as cheerio from "cheerio";
+import { parseDocument } from "htmlparser2";
+import { selectAll, selectOne } from "css-select";
+import { textContent } from "domutils";
+import { isTag, isText, type Element, type AnyNode } from "domhandler";
 import { getJSON, fetchRetry } from "@/lib/http";
 
 const BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest";
@@ -35,47 +38,65 @@ export async function fetchJats(pmcid: string): Promise<string | null> {
 
 const clean = (s: string) => s.replace(/\s+/g, " ").replace(/\s([,.;:)])/g, "$1").trim();
 
+type El = Element;
+const OPTS = { xmlMode: true };
+const kids = (el: El, name?: string): El[] => (el.children ?? []).filter((c): c is El => isTag(c) && (!name || c.name === name));
+const first = (el: El, name: string): El | undefined => kids(el, name)[0];
+
+/** Text content, optionally skipping floats (tables/figures) and numeric bibliography call-outs. */
+function text(node: AnyNode, skipFloats = false): string {
+  if (isText(node)) return node.data;
+  if (!isTag(node)) return "";
+  if (skipFloats) {
+    if (node.name === "table-wrap" || node.name === "fig") return "";
+    if (node.name === "xref" && node.attribs["ref-type"] === "bibr" && /^[\s\d,\u2013\-\[\]()]*$/.test(textContent(node))) return "";
+  }
+  return (node.children ?? []).map((c) => text(c, skipFloats)).join("");
+}
+
 /** Parse JATS into ordered sections: abstract, body sections (with sub-headings inline), tables, figure captions. */
 export function parseJats(xml: string): { sections: Section[]; license: string | null } {
-  const $ = cheerio.load(xml, { xml: true });
+  const doc = parseDocument(xml, OPTS);
   const out: Section[] = [];
-  const license = clean($("permissions license").first().attr("xlink:href") ?? $("permissions license license-p").first().text() ?? "") || null;
+  const lic = selectOne("permissions license", doc, OPTS) as El | null;
+  const license = lic ? clean(lic.attribs["xlink:href"] ?? (selectOne("license-p", lic, OPTS) ? textContent(selectOne("license-p", lic, OPTS)!) : "")) || null : null;
 
-  const abs = $("article-meta abstract").first();
-  if (abs.length) out.push({ label: "Abstract", kind: "abstract", text: clean(abs.find("p").map((_, p) => $(p).text()).get().join("\n")) || clean(abs.text()) });
-
-  // Remove floats from body text; they are captured separately
-  const tables = $("table-wrap");
-  const figs = $("fig");
-
-  const walk = (sec: any, prefix: string) => {
-    const title = clean($(sec).children("title").first().text()) || "Section";
-    const label = prefix ? `${prefix} › ${title}` : title;
-    const paras = $(sec).children("p").map((_, p) => {
-      const c = $(p).clone();
-      c.find("table-wrap, fig, xref[ref-type='bibr'] sup").remove();
-      return clean(c.text());
-    }).get().filter(Boolean);
-    if (paras.length) out.push({ label, kind: "section", text: paras.join("\n\n") });
-    $(sec).children("sec").each((_, s) => walk(s, prefix ? prefix : title));
-  };
-  $("body").children("sec").each((_, s) => walk(s, ""));
-  if (!$("body").children("sec").length) {
-    const paras = $("body > p").map((_, p) => clean($(p).text())).get().filter(Boolean);
-    if (paras.length) out.push({ label: "Body", kind: "section", text: paras.join("\n\n") });
+  const abs = selectOne("article-meta abstract", doc, OPTS) as El | null;
+  if (abs) {
+    const ps = selectAll("p", abs, OPTS).map((p) => clean(text(p, true))).filter(Boolean);
+    out.push({ label: "Abstract", kind: "abstract", text: ps.join("\n") || clean(textContent(abs)) });
   }
 
-  tables.each((_, t) => {
-    const label = clean($(t).children("label").text()) || "Table";
-    const caption = clean($(t).find("caption").first().text());
-    const rows = $(t).find("tr").map((_, tr) => $(tr).find("th,td").map((_, c) => clean($(c).text())).get().join(" | ")).get();
-    const foot = clean($(t).find("table-wrap-foot").text());
-    out.push({ label, kind: "table", text: [caption, ...rows, foot].filter(Boolean).join("\n") });
-  });
-  figs.each((_, f) => {
-    const label = clean($(f).children("label").text()) || "Figure";
-    const caption = clean($(f).find("caption").text());
-    if (caption) out.push({ label, kind: "figure", text: caption });
-  });
+  const walk = (sec: El, prefix: string) => {
+    const t = first(sec, "title");
+    const title = (t ? clean(textContent(t)) : "") || "Section";
+    const label = prefix ? `${prefix} › ${title}` : title;
+    const paras = kids(sec, "p").map((p) => clean(text(p, true))).filter(Boolean);
+    if (paras.length) out.push({ label, kind: "section", text: paras.join("\n\n") });
+    kids(sec, "sec").forEach((s) => walk(s, prefix || title));
+  };
+  const body = selectOne("body", doc, OPTS) as El | null;
+  if (body) {
+    const secs = kids(body, "sec");
+    secs.forEach((s) => walk(s, ""));
+    if (!secs.length) {
+      const paras = kids(body, "p").map((p) => clean(text(p, true))).filter(Boolean);
+      if (paras.length) out.push({ label: "Body", kind: "section", text: paras.join("\n\n") });
+    }
+  }
+
+  for (const t of selectAll("table-wrap", doc, OPTS) as unknown as El[]) {
+    const lab = first(t, "label");
+    const cap = selectOne("caption", t, OPTS);
+    const rows = (selectAll("tr", t, OPTS) as El[]).map((tr) => kids(tr).filter((c) => c.name === "th" || c.name === "td").map((c) => clean(textContent(c))).join(" | "));
+    const foot = selectOne("table-wrap-foot", t, OPTS);
+    out.push({ label: (lab && clean(textContent(lab))) || "Table", kind: "table", text: [cap ? clean(textContent(cap)) : "", ...rows, foot ? clean(textContent(foot)) : ""].filter(Boolean).join("\n") });
+  }
+  for (const f of selectAll("fig", doc, OPTS) as unknown as El[]) {
+    const lab = first(f, "label");
+    const cap = selectOne("caption", f, OPTS);
+    const caption = cap ? clean(textContent(cap)) : "";
+    if (caption) out.push({ label: (lab && clean(textContent(lab))) || "Figure", kind: "figure", text: caption });
+  }
   return { sections: out, license };
 }
