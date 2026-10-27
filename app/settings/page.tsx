@@ -22,10 +22,12 @@ export default async function SettingsPage() {
     getState("last_daily"),
     sb.rpc("journal_counts"),
   ]);
+  const dbCheck = await sb.from("journals").select("id", { count: "exact", head: true });
   const perJournal = new Map<number, number>();
   (counts ?? []).forEach((c: any) => perJournal.set(c.journal_id, Number(c.n)));
   const q = (s: string) => (jobs ?? []).filter((j: any) => j.status === s).length;
   const checks: [string, boolean, string][] = [
+    ["Database tables", !dbCheck.error, dbCheck.error ? "missing — run 0001_init.sql in Supabase SQL Editor" : `${journals?.length ?? 0} journals`],
     ["AI provider", hasLLM(), `${env.llmModel} @ ${env.llmBase.replace(/^https?:\/\//, "")}`],
     ["Embeddings (semantic search)", hasEmbeddings(), hasEmbeddings() ? `${env.embModel} · ${env.embDims}d` : "keyword search only"],
     ["NCBI API key", Boolean(env.ncbiKey), env.ncbiKey ? "10 req/s" : "optional — 3 req/s"],

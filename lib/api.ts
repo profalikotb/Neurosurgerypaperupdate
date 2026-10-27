@@ -10,7 +10,11 @@ export function withUser<C = any>(fn: (req: Request, user: AppUser, ctx: C) => P
     try { return await fn(req, u, ctx); }
     catch (e: any) {
       console.error(e);
-      return NextResponse.json({ error: e?.message ?? "Server error" }, { status: 500 });
+      const m = String(e?.message ?? "Server error");
+      const hint = /relation .* does not exist|Could not find the (table|function)|schema cache/i.test(m)
+        ? "Database tables are missing — run supabase/migrations/0001_init.sql in Supabase → SQL Editor. (" + m + ")"
+        : /Invalid API key|JWT|apikey/i.test(m) ? "Supabase key rejected — check SUPABASE_SERVICE_ROLE_KEY in Vercel. (" + m + ")" : m;
+      return NextResponse.json({ error: hint }, { status: 500 });
     }
   };
 }

@@ -6,17 +6,22 @@ import { Button } from "@/components/ui/button";
 
 export function CheckNowButton({ label = "Check now" }: { label?: string }) {
   const [state, setState] = useState<"idle" | "busy" | "done" | "err">("idle");
+  const [msg, setMsg] = useState("");
   const router = useRouter();
   return (
-    <Button size="sm" variant="outline" disabled={state === "busy"} onClick={async () => {
-      setState("busy");
-      const r = await fetch("/api/ingest/now", { method: "POST" });
-      setState(r.ok ? "done" : "err");
-      setTimeout(() => router.refresh(), 45000);
-    }}>
-      {state === "busy" ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-      {state === "done" ? "Queued — refresh in a minute" : state === "err" ? "Failed — see Settings" : label}
-    </Button>
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <Button size="sm" variant="outline" disabled={state === "busy"} onClick={async () => {
+        setState("busy"); setMsg("");
+        const r = await fetch("/api/ingest/now", { method: "POST" });
+        const j = await r.json().catch(() => ({}));
+        if (r.ok) { setState("done"); setTimeout(() => router.refresh(), 45000); }
+        else { setState("err"); setMsg(j.error ?? `HTTP ${r.status}`); }
+      }}>
+        {state === "busy" ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+        {state === "done" ? "Queued — refresh in a minute" : state === "err" ? "Failed — retry" : label}
+      </Button>
+      {msg && <span className="text-[12px] text-bad">{msg}</span>}
+    </span>
   );
 }
 
