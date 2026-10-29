@@ -5,13 +5,32 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+concurrency:
+  group: process-queue
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 7
     steps:
       - name: Trigger /api/jobs/run
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          code=$(curl -s -o out.json -w "%{http_code}" -X POST "${{ secrets.APP_URL }}/api/jobs/run" \
-            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" --max-time 320)
-          cat out.json; echo; test "$code" = "200"
+          set -u
+          if [ -z "${APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::warning::APP_URL and/or CRON_SECRET repo secrets are not set — skipping. Add them under Settings → Secrets and variables → Actions."
+            exit 0
+          fi
+          url="${APP_URL%/}/api/jobs/run"
+          code=$(curl -sS -o out.json -w "%{http_code}" -X POST "$url" \
+            -H "Authorization: Bearer $CRON_SECRET" --max-time 320) || code="000"
+          [ -f out.json ] && cat out.json; echo
+          case "$code" in
+            200) echo "OK" ;;
+            401) echo "::error::401 Unauthorized — CRON_SECRET in GitHub does not match CRON_SECRET in Vercel (Production env), or Vercel was not redeployed after setting it."; exit 1 ;;
+            404) echo "::error::404 — APP_URL ($APP_URL) is wrong or not the production deployment."; exit 1 ;;
+            000) echo "::error::Could not reach $url (DNS/TLS/timeout). Check APP_URL starts with https:// and the deployment is live."; exit 1 ;;
+            *)   echo "::error::HTTP $code from $url"; exit 1 ;;
+          esac
